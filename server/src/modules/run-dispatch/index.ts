@@ -37,6 +37,14 @@ export type {
   StalenessDecision,
   QueuedRunFacts,
 } from "./domain/policy.js";
+export {
+  agedPriorityRank,
+  allowsTerminalStatusBypass,
+  issueRunPriorityRank,
+  QUEUE_PRIORITY_AGE_STEP_MS,
+  QUEUE_PRIORITY_MAX_AGE_STEPS,
+  TERMINAL_COMMENT_WAKE_REASONS,
+} from "./domain/policy.js";
 export type {
   PostCommitEffect,
   PromoteScheduledRetryOutcome,

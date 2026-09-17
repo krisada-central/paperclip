@@ -507,6 +507,8 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  agedPriorityRank,
+  allowsTerminalStatusBypass,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -16775,20 +16777,9 @@ export function heartbeatService(
     };
   }
 
-  function issueRunPriorityRank(priority: string | null | undefined) {
-    switch (priority) {
-      case "critical":
-        return 0;
-      case "high":
-        return 1;
-      case "medium":
-        return 2;
-      case "low":
-        return 3;
-      default:
-        return 4;
-    }
-  }
+  // Priority ranking for queued runs lives in
+  // modules/run-dispatch/domain/queued-run-priority.ts (issueRunPriorityRank /
+  // agedPriorityRank). Do not reintroduce a local switch here.
 
   async function listQueuedRunDependencyReadiness(
     companyId: string,
@@ -19698,6 +19689,7 @@ export function heartbeatService(
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
+      const now = new Date();
       const prioritizedRuns = [...queuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(
           parseObject(left.contextSnapshot).issueId,
@@ -19719,23 +19711,56 @@ export function heartbeatService(
           : true;
         const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
         const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
+        const leftCtx = parseObject(left.contextSnapshot);
+        const rightCtx = parseObject(right.contextSnapshot);
+        const leftTerminal =
+          leftIssue?.status === "done" || leftIssue?.status === "cancelled";
+        const rightTerminal =
+          rightIssue?.status === "done" || rightIssue?.status === "cancelled";
+        const leftTerminalBypass = allowsTerminalStatusBypass({
+          resumeIntent:
+            leftCtx.resumeIntent === true || leftCtx.followUpRequested === true,
+          wakeCommentIdPresent: Boolean(deriveCommentId(leftCtx, null)),
+          wakeReason: readNonEmptyString(leftCtx.wakeReason),
+        });
+        const rightTerminalBypass = allowsTerminalStatusBypass({
+          resumeIntent:
+            rightCtx.resumeIntent === true ||
+            rightCtx.followUpRequested === true,
+          wakeCommentIdPresent: Boolean(deriveCommentId(rightCtx, null)),
+          wakeReason: readNonEmptyString(rightCtx.wakeReason),
+        });
+        // Terminal wakes without a resume/comment-shaped bypass are dead on
+        // claim — demote them below not-ready so they stop jumping real work.
         const leftRank = leftIssueId
-          ? leftReady
-            ? leftIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
+          ? leftTerminal && !leftTerminalBypass
+            ? 4
+            : leftReady
+              ? leftIssue?.status === "in_progress"
+                ? 0
+                : 1
+              : 3
           : 2;
         const rightRank = rightIssueId
-          ? rightReady
-            ? rightIssue?.status === "in_progress"
-              ? 0
-              : 1
-            : 3
+          ? rightTerminal && !rightTerminalBypass
+            ? 4
+            : rightReady
+              ? rightIssue?.status === "in_progress"
+                ? 0
+                : 1
+              : 3
           : 2;
         if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+        const leftPriorityRank = agedPriorityRank(
+          leftIssue?.priority,
+          left.createdAt,
+          now,
+        );
+        const rightPriorityRank = agedPriorityRank(
+          rightIssue?.priority,
+          right.createdAt,
+          now,
+        );
         if (leftPriorityRank !== rightPriorityRank)
           return leftPriorityRank - rightPriorityRank;
         return left.createdAt.getTime() - right.createdAt.getTime();
