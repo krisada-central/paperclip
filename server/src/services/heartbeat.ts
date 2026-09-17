@@ -507,8 +507,9 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
-  agedPriorityRank,
   allowsTerminalStatusBypass,
+  compareQueuedRunClaimOrder,
+  queueWaitStartedAt,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -19750,20 +19751,27 @@ export function heartbeatService(
                 : 1
               : 3
           : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = agedPriorityRank(
-          leftIssue?.priority,
-          left.createdAt,
+        return compareQueuedRunClaimOrder(
+          {
+            readinessRank: leftRank,
+            priority: leftIssue?.priority,
+            queueWaitStartedAt: queueWaitStartedAt({
+              createdAt: left.createdAt,
+              updatedAt: left.updatedAt,
+              scheduledRetryAt: left.scheduledRetryAt ?? null,
+            }),
+          },
+          {
+            readinessRank: rightRank,
+            priority: rightIssue?.priority,
+            queueWaitStartedAt: queueWaitStartedAt({
+              createdAt: right.createdAt,
+              updatedAt: right.updatedAt,
+              scheduledRetryAt: right.scheduledRetryAt ?? null,
+            }),
+          },
           now,
         );
-        const rightPriorityRank = agedPriorityRank(
-          rightIssue?.priority,
-          right.createdAt,
-          now,
-        );
-        if (leftPriorityRank !== rightPriorityRank)
-          return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
       });
 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];

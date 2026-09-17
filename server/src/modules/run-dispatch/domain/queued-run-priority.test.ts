@@ -3,7 +3,9 @@ import {
   QUEUE_PRIORITY_AGE_STEP_MS,
   agedPriorityRank,
   allowsTerminalStatusBypass,
+  compareQueuedRunClaimOrder,
   issueRunPriorityRank,
+  queueWaitStartedAt,
 } from "./queued-run-priority.js";
 
 describe("issueRunPriorityRank", () => {
@@ -17,6 +19,32 @@ describe("issueRunPriorityRank", () => {
     ["unknown", 4],
   ] as const)("%s → %s", (priority, rank) => {
     expect(issueRunPriorityRank(priority)).toBe(rank);
+  });
+});
+
+describe("queueWaitStartedAt", () => {
+  const createdAt = new Date("2026-09-17T06:00:00.000Z");
+  const updatedAt = new Date("2026-09-17T12:00:00.000Z");
+
+  it("uses createdAt for a never-retried wake", () => {
+    expect(
+      queueWaitStartedAt({
+        createdAt,
+        updatedAt,
+        scheduledRetryAt: null,
+      }),
+    ).toEqual(createdAt);
+  });
+
+  it("uses updatedAt after a scheduled-retry promotion (not original createdAt)", () => {
+    // promoteDueRetryInTx bumps updatedAt at promotion; createdAt stays old.
+    expect(
+      queueWaitStartedAt({
+        createdAt,
+        updatedAt,
+        scheduledRetryAt: new Date("2026-09-17T06:05:00.000Z"),
+      }),
+    ).toEqual(updatedAt);
   });
 });
 
@@ -76,6 +104,80 @@ describe("agedPriorityRank", () => {
     expect(agedLow).toBe(2);
     expect(freshHigh).toBe(1);
     expect(agedLow).toBeGreaterThan(freshHigh);
+  });
+});
+
+describe("compareQueuedRunClaimOrder", () => {
+  const now = new Date("2026-09-17T12:00:00.000Z");
+  const sixHoursAgo = new Date(now.getTime() - 3 * QUEUE_PRIORITY_AGE_STEP_MS);
+
+  it("lets a low that actually waited 6h in-queue beat a fresh medium at the same readiness rank", () => {
+    const waitedLow = {
+      readinessRank: 1,
+      priority: "low" as const,
+      queueWaitStartedAt: sixHoursAgo,
+    };
+    const freshMedium = {
+      readinessRank: 1,
+      priority: "medium" as const,
+      queueWaitStartedAt: now,
+    };
+    expect(compareQueuedRunClaimOrder(waitedLow, freshMedium, now)).toBeLessThan(
+      0,
+    );
+  });
+
+  it("does not let a freshly-promoted retry inherit pre-queue delay over a fresh higher-priority wake", () => {
+    // Fails if aging uses original createdAt (sixHoursAgo) instead of queue-wait
+    // start (now). Same readiness rank; retry was scheduled_retry for 6h then
+    // promoted just now.
+    const promotedLowRetry = {
+      readinessRank: 1,
+      priority: "low" as const,
+      queueWaitStartedAt: queueWaitStartedAt({
+        createdAt: sixHoursAgo,
+        updatedAt: now,
+        scheduledRetryAt: sixHoursAgo,
+      }),
+    };
+    const freshMedium = {
+      readinessRank: 1,
+      priority: "medium" as const,
+      queueWaitStartedAt: queueWaitStartedAt({
+        createdAt: now,
+        updatedAt: now,
+        scheduledRetryAt: null,
+      }),
+    };
+    expect(promotedLowRetry.queueWaitStartedAt).toEqual(now);
+    expect(
+      compareQueuedRunClaimOrder(promotedLowRetry, freshMedium, now),
+    ).toBeGreaterThan(0);
+
+    // Document the defect the old createdAt clock would produce:
+    const wronglyAged = {
+      ...promotedLowRetry,
+      queueWaitStartedAt: sixHoursAgo,
+    };
+    expect(compareQueuedRunClaimOrder(wronglyAged, freshMedium, now)).toBeLessThan(
+      0,
+    );
+  });
+
+  it("never lets aging overtake a lower readiness rank (in_progress still wins)", () => {
+    const agedLowReady = {
+      readinessRank: 1,
+      priority: "low" as const,
+      queueWaitStartedAt: sixHoursAgo,
+    };
+    const freshInProgress = {
+      readinessRank: 0,
+      priority: "low" as const,
+      queueWaitStartedAt: now,
+    };
+    expect(
+      compareQueuedRunClaimOrder(agedLowReady, freshInProgress, now),
+    ).toBeGreaterThan(0);
   });
 });
 

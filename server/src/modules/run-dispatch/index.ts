@@ -40,7 +40,9 @@ export type {
 export {
   agedPriorityRank,
   allowsTerminalStatusBypass,
+  compareQueuedRunClaimOrder,
   issueRunPriorityRank,
+  queueWaitStartedAt,
   QUEUE_PRIORITY_AGE_STEP_MS,
   QUEUE_PRIORITY_MAX_AGE_STEPS,
   TERMINAL_COMMENT_WAKE_REASONS,
